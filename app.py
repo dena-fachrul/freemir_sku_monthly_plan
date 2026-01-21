@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import io
+from datetime import date
 
 # Page Configuration
 st.set_page_config(
@@ -9,141 +9,162 @@ st.set_page_config(
     layout="wide"
 )
 
-# Title and Description
+# Title
 st.title("🧹 SKU Target Data Cleaner")
-st.markdown("""
-This tool transforms raw stock data into a clean, standardized format for target importing.
-**Upload the required CSV files below to get started.**
-""")
 
-# --- Sidebar for User Inputs ---
+# --- Sidebar Inputs ---
 with st.sidebar:
-    st.header("1. Global Settings")
-    input_month = st.text_input("Month (e.g., 2026-01)", value="2026-01")
-    input_brand = st.text_input("Brand (e.g., Freemir)", value="Freemir")
+    st.header("1. Settings")
     
-    st.header("2. File Uploads")
-    uploaded_sheet1 = st.file_uploader("Upload Sheet 1 (Main Data)", type=['csv', 'xlsx'])
-    uploaded_sheet2 = st.file_uploader("Upload Sheet 2 (Product Grade)", type=['csv', 'xlsx'])
+    # Input Date dengan format khusus YYYY-MM-DD
+    # Default ke hari ini, user bisa ganti
+    selected_date = st.date_input("Select Date", value=date(2026, 1, 1))
+    formatted_month = selected_date.strftime("%Y-%m-%d") # Hasil: 2026-01-01
+    
+    # Input Brand (Default lowercase 'freemir')
+    input_brand = st.text_input("Brand", value="freemir")
+    
+    st.divider()
+    
+    st.header("2. Upload Files")
+    uploaded_sheet1 = st.file_uploader("Upload Sheet 1 (Main Data)", type=['xlsx', 'csv'])
+    uploaded_sheet2 = st.file_uploader("Upload Sheet 2 (Product Grade)", type=['xlsx', 'csv'])
 
-# --- Helper Functions ---
-def load_data(uploaded_file, header_row=0):
-    """Helper to load CSV or Excel files."""
-    if uploaded_file.name.endswith('.csv'):
-        return pd.read_csv(uploaded_file, header=header_row)
-    else:
-        return pd.read_excel(uploaded_file, header=header_row)
+    st.divider()
+    
+    # Tombol Pelatuk (Trigger)
+    process_btn = st.button("🚀 Process Data", type="primary")
+
+# --- Logic Functions ---
 
 def extract_platform_store(header_str):
     """
-    Parses 'StoreCode - Platform StoreName'
-    Example: 'TTFROS004 - TikTok Electric'
-    Returns: ('TikTok', 'TTFROS004')
+    Format Header: "KodeToko - Platform NamaToko"
+    Contoh: "TTFROS004 - TikTok Electric"
+    Output: Platform=TikTok, Store=TTFROS004
     """
     try:
-        if "-" not in header_str:
+        if "-" not in str(header_str):
             return None, None
             
-        parts = header_str.split("-")
+        parts = str(header_str).split("-")
+        # Bagian kiri adalah Kode Toko (misal: TTFROS004)
         store_code = parts[0].strip()
         
-        # Second part contains Platform + Name (e.g., "TikTok Electric")
-        rest = parts[1].strip()
-        # Assume the first word is the Platform
-        platform = rest.split(" ")[0]
+        # Bagian kanan adalah Platform + Nama (misal: TikTok Electric)
+        right_part = parts[1].strip()
+        
+        # Ambil kata pertama dari bagian kanan sebagai Platform
+        platform = right_part.split(" ")[0]
         
         return platform, store_code
     except Exception:
         return None, None
 
-def process_data(df_main, df_grade, month, brand):
-    """Core logic to transform and clean data."""
-    
-    # 1. Prepare Grade Dictionary (SKU -> Grade)
-    # Assuming Sheet 2 has SKU in Col A (0) and Grade in Col B (1)
-    # We clean the column names just in case
+def process_data(df_main, df_grade, month_val, brand_val):
+    # 1. Cleaning Sheet 2 (Grade)
+    # Asumsi: Kolom A = SKU, Kolom B = Grade
     df_grade.columns = [str(c).strip() for c in df_grade.columns]
+    # Buat dictionary untuk lookup yang cepat
     grade_map = dict(zip(df_grade.iloc[:, 0], df_grade.iloc[:, 1]))
 
-    # 2. Identify Store Columns
-    # User specified columns S (index 18) to AH (index 33). 
-    # Note: S is the 19th letter, so index 18. AH is 34th, so index 33.
-    # We use explicit slicing based on user logic.
-    store_columns = df_main.columns[18:34] 
-
+    # 2. Setup Kolom Target (S sampai AH)
+    # S adalah kolom ke-19 (index 18)
+    # AH adalah kolom ke-34 (index 33)
+    # Kita ambil slice index 18 sampai 34 (karena python range exclusive di akhir)
+    target_col_indices = list(range(18, 34))
+    
     processed_rows = []
 
-    # 3. Iterate through data
+    # 3. Iterasi Data Utama
+    # Kita iterasi per baris
     for idx, row in df_main.iterrows():
-        sku = row.iloc[5] # Column F is index 5
+        # Kolom F adalah index 5 (SKU)
+        sku = row.iloc[5]
         
-        # Skip if SKU is missing
+        # --- VALIDASI BARIS (PENTING) ---
+        # 1. Cek jika SKU kosong/NaN
         if pd.isna(sku) or str(sku).strip() == "":
             continue
-
-        product_grade = grade_map.get(sku, "N/A") # Lookup Grade
-
-        # Iterate through each store column for this SKU
-        for col_name in store_columns:
-            raw_goal = row[col_name]
             
-            # --- Cleaning Logic ---
-            # Convert to numeric, coerce errors to NaN
-            goal_value = pd.to_numeric(raw_goal, errors='coerce')
+        # 2. Cek jika baris ini adalah baris "Target" atau "Total" (bukan produk)
+        # Seringkali baris 5 berisi total target, kita harus skip
+        if str(sku).lower() in ['target', 'total', 'grand total']:
+            continue
             
-            # Skip if NaN, 0, or negative
-            if pd.isna(goal_value) or goal_value <= 0:
+        # Lookup Grade
+        product_grade = grade_map.get(sku, "N/A")
+
+        # Loop kolom toko (S - AH)
+        for col_idx in target_col_indices:
+            # Ambil nama header kolom tersebut untuk ekstrak info toko
+            header_name = df_main.columns[col_idx]
+            
+            # Ambil nilai target (angka)
+            raw_val = row.iloc[col_idx]
+            
+            # Cleaning nilai target
+            val = pd.to_numeric(raw_val, errors='coerce')
+            
+            # Skip jika NaN, 0, atau negatif
+            if pd.isna(val) or val <= 0:
                 continue
-
-            # Extract Store Code and Platform from the Header (col_name)
-            platform, store_code = extract_platform_store(col_name)
+                
+            # Ekstrak Info Toko dari Header
+            platform, store_code = extract_platform_store(header_name)
             
+            # Jika header valid (mengandung "-"), masukkan data
             if platform and store_code:
                 processed_rows.append({
-                    "月份/Month": month,
-                    "品牌/Brand": brand,
+                    "月份/Month": month_val,
+                    "品牌/Brand": brand_val,
                     "平台/Platform": platform,
                     "店铺/Store": store_code,
                     "SKU": sku,
                     "产品等级/Product grade": product_grade,
-                    "月目标/Monthly goal": int(goal_value)
+                    "月目标/Monthly goal": int(val)
                 })
+                
+    return pd.DataFrame(processed_rows)
 
-    # Create DataFrame
-    df_result = pd.DataFrame(processed_rows)
-    return df_result
+# --- Main Execution Flow ---
 
-# --- Main Execution ---
-if uploaded_sheet1 and uploaded_sheet2:
-    try:
-        # Load Sheet 1 with header at row 4 (index 3) as specified
-        df1 = load_data(uploaded_sheet1, header_row=3)
-        # Load Sheet 2 with standard header (index 0)
-        df2 = load_data(uploaded_sheet2, header_row=0)
+if process_btn:
+    if uploaded_sheet1 and uploaded_sheet2:
+        try:
+            with st.spinner("Processing data..."):
+                # Load Sheet 1: Header di baris 4 (index 3)
+                # Ini berarti data SKU mulai dibaca dari baris 5 (index 4)
+                df1 = pd.read_excel(uploaded_sheet1, header=3)
+                
+                # Load Sheet 2: Header standar (baris 1/index 0)
+                df2 = pd.read_excel(uploaded_sheet2, header=0)
 
-        st.info("Files uploaded successfully. Processing...")
-        
-        # Process
-        result_df = process_data(df1, df2, input_month, input_brand)
-        
-        # Show Preview
-        st.subheader("Data Preview")
-        st.dataframe(result_df.head())
-        st.write(f"Total Rows Generated: **{len(result_df)}**")
-
-        # Download Button
-        csv_buffer = result_df.to_csv(index=False).encode('utf-8')
-        
-        st.download_button(
-            label="Download Cleaned Data (CSV)",
-            data=csv_buffer,
-            file_name=f"Cleaned_Target_{input_brand}_{input_month}.csv",
-            mime="text/csv"
-        )
-
-    except Exception as e:
-        st.error(f"An error occurred during processing: {e}")
-        st.warning("Please check if the file format matches the specified structure (Header at row 4, Store columns S-AH).")
-
+                # Jalankan Logika
+                result_df = process_data(df1, df2, formatted_month, input_brand)
+                
+                if not result_df.empty:
+                    st.success(f"Success! Generated {len(result_df)} rows.")
+                    
+                    # Tampilkan Preview
+                    st.subheader("Preview Result")
+                    st.dataframe(result_df.head(10))
+                    
+                    # Download Button
+                    csv_buffer = result_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Result CSV",
+                        data=csv_buffer,
+                        file_name=f"Cleaned_{input_brand}_{formatted_month}.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.warning("No valid data found. Please check: 1. Are columns S-AH containing targets? 2. Is column F containing SKUs?")
+                    
+        except Exception as e:
+            st.error(f"Error: {e}")
+    else:
+        st.error("Please upload both Sheet 1 and Sheet 2 first.")
 else:
-    st.info("Waiting for file uploads...")
+    # Tampilan awal sebelum tombol ditekan
+    st.info("👋 Upload files on the left and click 'Process Data' to start.")
