@@ -18,6 +18,7 @@ st.markdown("""
    - `SKU Target` (Data target per toko)
    - `SKU Grade` (Mapping grade produk)
 2. Klik tombol **Process Data**.
+3. Download hasilnya dalam format **Excel (.xlsx)** agar rapi.
 """)
 
 # --- Sidebar: Input User ---
@@ -68,6 +69,27 @@ def extract_platform_store(header_str):
     except:
         return None, None
 
+def to_excel(df):
+    """
+    Mengubah DataFrame menjadi bytes Excel (.xlsx)
+    """
+    output = io.BytesIO()
+    # Menggunakan engine xlsxwriter agar formatnya rapi
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Cleaned Data')
+        
+        # (Opsional) Auto-adjust lebar kolom
+        worksheet = writer.sheets['Cleaned Data']
+        for idx, col in enumerate(df.columns):
+            # Cari panjang maksimum data atau header
+            series = df[col]
+            max_len = max((series.astype(str).map(len).max(), len(str(col)))) + 1
+            # Batasi agar tidak terlalu lebar (misal max 50)
+            worksheet.set_column(idx, idx, min(max_len, 50))
+            
+    processed_data = output.getvalue()
+    return processed_data
+
 def process_excel(file_upload, month_val, brand_val):
     """
     Logika utama: Membaca 1 File Excel dengan 2 Sheet spesifik.
@@ -79,7 +101,7 @@ def process_excel(file_upload, month_val, brand_val):
     required_sheets = ['SKU Target', 'SKU Grade']
     for sheet in required_sheets:
         if sheet not in xls.sheet_names:
-            return None, f"Sheet '{sheet}' tidak ditemukan dalam file Excel."
+            return None, f"Sheet '{sheet}' tidak ditemukan dalam file Excel. Pastikan nama sheet persis 'SKU Target' dan 'SKU Grade'."
 
     # 2. Baca Sheet "SKU Grade"
     # Header di baris 0 (default)
@@ -91,13 +113,12 @@ def process_excel(file_upload, month_val, brand_val):
     grade_map = dict(zip(df_grade.iloc[:, 0], df_grade.iloc[:, 1]))
 
     # 3. Baca Sheet "SKU Target"
-    # Berdasarkan file 'Input Test', header ada di baris pertama (index 0)
+    # Header ada di baris pertama (index 0)
     df_target = pd.read_excel(xls, sheet_name='SKU Target', header=0)
     
     processed_rows = []
     
     # Deteksi Kolom Toko secara Otomatis
-    # Kita cari semua kolom yang memiliki pola "Kode - Platform"
     store_columns = []
     for col in df_target.columns:
         plat, code = extract_platform_store(col)
@@ -109,8 +130,7 @@ def process_excel(file_upload, month_val, brand_val):
 
     # 4. Iterasi Baris Data
     for idx, row in df_target.iterrows():
-        # Asumsi kolom SKU bernama "SKU" atau berada di kolom pertama (index 0)
-        # Kita coba cari kolom bernama 'SKU', jika tidak ada pakai kolom index 0
+        # Cari kolom SKU
         if 'SKU' in df_target.columns:
             sku = row['SKU']
         else:
@@ -175,15 +195,15 @@ if run_process:
                     st.subheader("Preview Data")
                     st.dataframe(result_df.head(10))
                     
-                    # Download Button
-                    csv_buffer = result_df.to_csv(index=False).encode('utf-8')
-                    filename = f"Cleaned_{target_brand}_{formatted_date}.csv"
+                    # --- DOWNLOAD SEBAGAI EXCEL (.xlsx) ---
+                    excel_data = to_excel(result_df)
+                    filename = f"Cleaned_{target_brand}_{formatted_date}.xlsx"
                     
                     st.download_button(
-                        label="📥 Download Result CSV",
-                        data=csv_buffer,
+                        label="📥 Download Result (.xlsx)",
+                        data=excel_data,
                         file_name=filename,
-                        mime="text/csv"
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 else:
                     st.warning("Data kosong setelah diproses. Cek apakah ada nilai target > 0?")
